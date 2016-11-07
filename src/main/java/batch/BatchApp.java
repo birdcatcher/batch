@@ -18,6 +18,13 @@ import org.springframework.context.annotation.*;
 import org.springframework.core.io.*;
 import org.springframework.jdbc.core.*;
 
+import com.thoughtworks.xstream.converters.*;
+import com.thoughtworks.xstream.io.*;
+import org.springframework.batch.item.xml.*;
+import org.springframework.oxm.xstream.*;
+
+
+
 import org.slf4j.*;
 
 import java.util.*;
@@ -26,54 +33,88 @@ import java.util.*;
 @EnableBatchProcessing
 @SpringBootApplication
 public class BatchApp extends JobExecutionListenerSupport 
-	implements ItemProcessor<Person, Person> {
+	implements ItemProcessor<FieldSet, FieldSet> {
 
     @Override
-    public Person process(Person p) throws Exception {
-        Person transformedPerson = new Person(
-        	p.getFirstName().toUpperCase(), p.getLastName().toUpperCase());
-        log.info("Converted Person: " + transformedPerson);
-        return transformedPerson;
+    public FieldSet process(FieldSet in) throws Exception {
+    	return in;
     }    
 
+	@Override
+	public void afterJob(JobExecution jobExecution) {
+        log.info("Job completed!");		
+	}
+
+	String inputType = "csv"; //csv, fl, db
+	String outputType = "xml"; //csv, fl, db, xml, json
+    String fieldNames = "firstName,lastName";
+    String inputPath = "in.csv";
+    String outputPath = "out.xml";
+    String inputDelimiter = ",";
+    String outputDelimiter = ",";
+    String rootTagName = "Persons";
+    String entryTagName = "Person";
+
     @Bean
-    public FlatFileItemReader<Person> reader() {
-        FlatFileItemReader<Person> reader = new FlatFileItemReader<Person>();
-        reader.setResource(new FileSystemResource("in.csv"));
-        reader.setLineMapper(new DefaultLineMapper<Person>() {{
-            setLineTokenizer(new DelimitedLineTokenizer(",") {{
-                setNames(new String[] { "firstName", "lastName" });
+    public FlatFileItemReader dbReader() {
+        FlatFileItemReader reader = new FlatFileItemReader();
+        reader.setResource(new FileSystemResource(inputPath));
+        reader.setLineMapper(new DefaultLineMapper() {{
+            setLineTokenizer(new DelimitedLineTokenizer(inputDelimiter) {{
+                setNames(fieldNames.split(inputDelimiter));
             }});
-            setFieldSetMapper(new BeanWrapperFieldSetMapper<Person>() {{
-                setTargetType(Person.class);
-            }});
+            setFieldSetMapper(new PassThroughFieldSetMapper());
         }});
         return reader;
     }
 
     @Bean
-    public FlatFileItemWriter<Person> writer() {
-        FlatFileItemWriter<Person> writer = new FlatFileItemWriter<Person>();
-        writer.setResource(new FileSystemResource("out.csv"));
-        writer.setLineAggregator(new DelimitedLineAggregator<Person>() {{
-        	setDelimiter(",");
-        	setFieldExtractor(new BeanWrapperFieldExtractor<Person>() {{
-        		setNames(new String[] {"lastName", "firstName"});
-        	}});
+    public FlatFileItemReader fixedLengthReader() {
+        FlatFileItemReader reader = new FlatFileItemReader();
+        reader.setResource(new FileSystemResource(inputPath));
+        reader.setLineMapper(new DefaultLineMapper() {{
+            setLineTokenizer(new DelimitedLineTokenizer(inputDelimiter) {{
+                setNames(fieldNames.split(inputDelimiter));
+            }});
+            setFieldSetMapper(new PassThroughFieldSetMapper());
+        }});
+        return reader;
+    }
+
+    @Bean
+    public FlatFileItemReader csvReader() {
+        FlatFileItemReader reader = new FlatFileItemReader();
+        reader.setResource(new FileSystemResource(inputPath));
+        reader.setLineMapper(new DefaultLineMapper() {{
+            setLineTokenizer(new DelimitedLineTokenizer(inputDelimiter) {{
+                setNames(fieldNames.split(inputDelimiter));
+            }});
+            setFieldSetMapper(new PassThroughFieldSetMapper());
+        }});
+        return reader;
+    }
+
+    @Bean
+    public FlatFileItemWriter csvWriter() {
+        FlatFileItemWriter writer = new FlatFileItemWriter();
+        writer.setResource(new FileSystemResource(outputPath));
+        writer.setLineAggregator(new DelimitedLineAggregator() {{
+        	setDelimiter(outputDelimiter);
+        	setFieldExtractor(new PassThroughFieldExtractor());
         }});
         return writer;
     }
 
     @Bean
-    public org.springframework.batch.item.xml.StaxEventItemWriter<Person> xmlWriter() {
-        org.springframework.batch.item.xml.StaxEventItemWriter<Person> writer = 
-        	new org.springframework.batch.item.xml.StaxEventItemWriter<Person>();
-        writer.setResource(new FileSystemResource("out.xml"));
-        writer.setRootTagName("Persons");
-        org.springframework.oxm.xstream.XStreamMarshaller marshaller = 
-        	new org.springframework.oxm.xstream.XStreamMarshaller();
+    public StaxEventItemWriter xmlWriter() {
+        StaxEventItemWriter writer = new StaxEventItemWriter();
+        writer.setResource(new FileSystemResource(outputPath));
+        writer.setRootTagName(rootTagName);
+        XStreamMarshaller marshaller = new XStreamMarshaller();
+        marshaller.setConverters(new XMLMapConverter());	
         Map aliases =  new HashMap();
-        aliases.put("Person", "batch.Person");
+        aliases.put(entryTagName, 
+        	"org.springframework.batch.item.file.transform.DefaultFieldSet");
         marshaller.setAliases(aliases);
         writer.setMarshaller(marshaller);
         return writer;
@@ -91,18 +132,18 @@ public class BatchApp extends JobExecutionListenerSupport
 
     @Bean
     public Step step1() {
+    	ItemReader reader = csvReader();
+    	if (inputType == "csv") reader = csvReader();
+    	ItemWriter writer = csvWriter();
+    	if (outputType == "csv") writer = csvWriter();
+    	if (outputType == "xml") writer = xmlWriter();
         return stepBuilderFactory.get("step1")
-                .<Person, Person>chunk(10)
-                .reader(reader())
+                .<FieldSet, FieldSet>chunk(1)
+                .reader(reader)
                 .processor(this)
-                .writer(xmlWriter())
+                .writer(writer)
                 .build();
     }
-
-	@Override
-	public void afterJob(JobExecution jobExecution) {
-        log.info("Job completed!");		
-	}
 
     @Autowired
     public JobBuilderFactory jobBuilderFactory;
@@ -118,4 +159,24 @@ public class BatchApp extends JobExecutionListenerSupport
     public static void main(String[] args) throws Exception {
         SpringApplication.run(BatchApp.class, args);
     }
+
+	public class XMLMapConverter implements Converter {
+	   
+	    public void marshal(Object source, HierarchicalStreamWriter writer, 
+	    	MarshallingContext context) {
+	        Map<?, ?> map = ((FieldSet)source).getProperties();
+	        if(map == null) return;
+	        map.forEach((k, v) -> {
+	            writer.startNode(k.toString());
+	            writer.setValue(v.toString());
+	            writer.endNode(); 
+	        });
+	    }
+
+	    public boolean canConvert(Class type) { return true; }
+	    public Object unmarshal(HierarchicalStreamReader reader, 
+	    	UnmarshallingContext context) {
+	        return null;
+	    }
+	}    
 }
