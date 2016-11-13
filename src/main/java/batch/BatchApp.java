@@ -28,6 +28,7 @@ import org.springframework.oxm.xstream.*;
 import org.slf4j.*;
 
 import java.util.*;
+import java.util.stream.*;
 
 @Configuration
 @EnableBatchProcessing
@@ -37,7 +38,17 @@ public class BatchApp extends JobExecutionListenerSupport
 
     @Override
     public FieldSet process(FieldSet in) throws Exception {
-    	return in;
+    	ArrayList<String> names = new ArrayList<String>();
+    	ArrayList<String> values = new ArrayList<String>();
+    	Arrays.stream(outputFieldNames.split(","))
+		.forEach(x->{
+			names.add(x.trim());
+			values.add(in.readString(x.trim()));
+		});
+		FieldSet out = new DefaultFieldSet(values.toArray(new String[0]), 
+			names.toArray(new String[0]));
+    	log.info(Arrays.asList(out.getValues()).stream().collect(Collectors.joining(", ")));
+    	return out;
     }    
 
 	@Override
@@ -45,23 +56,27 @@ public class BatchApp extends JobExecutionListenerSupport
         log.info("Job completed!");		
 	}
 
-	String inputType = "csv"; //csv, fl, db
-	String outputType = "xml"; //csv, fl, db, xml, json
-    String fieldNames = "firstName,lastName";
-    String inputPath = "in.csv";
-    String outputPath = "out.xml";
+    String inputFile = "in.csv";
+	String inputFileType = "fl"; //csv, fl, db
+    String inputFieldNames = "firstName,lastName";
+    String inputFieldLengths = "1-3,4-6";
     String inputDelimiter = ",";
+
+    String outputFile = "out.txt";
+	String outputFileType = "txt"; //csv, fl, db, xml, json
+    String outputFieldNames = "lastName,firstName";
+    String outputFormat = "|%-5s:%5s|";
     String outputDelimiter = ",";
-    String rootTagName = "Persons";
-    String entryTagName = "Person";
+    String outputRootTagName = "Persons";
+    String outputEntryTagName = "Person";
 
     @Bean
     public FlatFileItemReader dbReader() {
         FlatFileItemReader reader = new FlatFileItemReader();
-        reader.setResource(new FileSystemResource(inputPath));
+        reader.setResource(new FileSystemResource(inputFile));
         reader.setLineMapper(new DefaultLineMapper() {{
             setLineTokenizer(new DelimitedLineTokenizer(inputDelimiter) {{
-                setNames(fieldNames.split(inputDelimiter));
+                setNames(inputFieldNames.split(inputDelimiter));
             }});
             setFieldSetMapper(new PassThroughFieldSetMapper());
         }});
@@ -71,10 +86,13 @@ public class BatchApp extends JobExecutionListenerSupport
     @Bean
     public FlatFileItemReader fixedLengthReader() {
         FlatFileItemReader reader = new FlatFileItemReader();
-        reader.setResource(new FileSystemResource(inputPath));
+        RangeArrayPropertyEditor pe = new RangeArrayPropertyEditor();
+        pe.setAsText(inputFieldLengths);
+        reader.setResource(new FileSystemResource(inputFile));
         reader.setLineMapper(new DefaultLineMapper() {{
-            setLineTokenizer(new DelimitedLineTokenizer(inputDelimiter) {{
-                setNames(fieldNames.split(inputDelimiter));
+            setLineTokenizer(new FixedLengthTokenizer() {{
+                setNames(inputFieldNames.split(inputDelimiter));
+                setColumns((Range[])pe.getValue());
             }});
             setFieldSetMapper(new PassThroughFieldSetMapper());
         }});
@@ -84,10 +102,10 @@ public class BatchApp extends JobExecutionListenerSupport
     @Bean
     public FlatFileItemReader csvReader() {
         FlatFileItemReader reader = new FlatFileItemReader();
-        reader.setResource(new FileSystemResource(inputPath));
+        reader.setResource(new FileSystemResource(inputFile));
         reader.setLineMapper(new DefaultLineMapper() {{
             setLineTokenizer(new DelimitedLineTokenizer(inputDelimiter) {{
-                setNames(fieldNames.split(inputDelimiter));
+                setNames(inputFieldNames.split(inputDelimiter));
             }});
             setFieldSetMapper(new PassThroughFieldSetMapper());
         }});
@@ -97,7 +115,7 @@ public class BatchApp extends JobExecutionListenerSupport
     @Bean
     public FlatFileItemWriter csvWriter() {
         FlatFileItemWriter writer = new FlatFileItemWriter();
-        writer.setResource(new FileSystemResource(outputPath));
+        writer.setResource(new FileSystemResource(outputFile));
         writer.setLineAggregator(new DelimitedLineAggregator() {{
         	setDelimiter(outputDelimiter);
         	setFieldExtractor(new PassThroughFieldExtractor());
@@ -106,14 +124,25 @@ public class BatchApp extends JobExecutionListenerSupport
     }
 
     @Bean
+    public FlatFileItemWriter formatWriter() {
+        FlatFileItemWriter writer = new FlatFileItemWriter();
+        writer.setResource(new FileSystemResource(outputFile));
+        writer.setLineAggregator(new FormatterLineAggregator() {{
+        	setFormat(outputFormat);
+        	setFieldExtractor(new PassThroughFieldExtractor());
+        }});
+        return writer;
+    }
+
+    @Bean
     public StaxEventItemWriter xmlWriter() {
         StaxEventItemWriter writer = new StaxEventItemWriter();
-        writer.setResource(new FileSystemResource(outputPath));
-        writer.setRootTagName(rootTagName);
+        writer.setResource(new FileSystemResource(outputFile));
+        writer.setRootTagName(outputRootTagName);
         XStreamMarshaller marshaller = new XStreamMarshaller();
         marshaller.setConverters(new XMLMapConverter());	
         Map aliases =  new HashMap();
-        aliases.put(entryTagName, 
+        aliases.put(outputEntryTagName, 
         	"org.springframework.batch.item.file.transform.DefaultFieldSet");
         marshaller.setAliases(aliases);
         writer.setMarshaller(marshaller);
@@ -133,10 +162,12 @@ public class BatchApp extends JobExecutionListenerSupport
     @Bean
     public Step step1() {
     	ItemReader reader = csvReader();
-    	if (inputType == "csv") reader = csvReader();
+    	if (inputFileType == "csv") reader = csvReader();
+    	if (inputFileType == "fl") reader = fixedLengthReader();
     	ItemWriter writer = csvWriter();
-    	if (outputType == "csv") writer = csvWriter();
-    	if (outputType == "xml") writer = xmlWriter();
+    	if (outputFileType == "csv") writer = csvWriter();
+    	if (outputFileType == "txt") writer = formatWriter();
+    	if (outputFileType == "xml") writer = xmlWriter();
         return stepBuilderFactory.get("step1")
                 .<FieldSet, FieldSet>chunk(1)
                 .reader(reader)
