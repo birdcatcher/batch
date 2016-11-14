@@ -57,10 +57,11 @@ public class BatchApp extends JobExecutionListenerSupport
 	}
 
     String inputFile = "in.csv";
-	String inputFileType = "fl"; //csv, fl, db
+	String inputFileType = "fl"; //csv, fl, db, re
     String inputFieldNames = "firstName,lastName";
     String inputFieldLengths = "1-3,4-6";
     String inputDelimiter = ",";
+    String inputRegEx = "(...)(...)";
 
     String outputFile = "out.txt";
 	String outputFileType = "txt"; //csv, fl, db, xml, json
@@ -105,6 +106,20 @@ public class BatchApp extends JobExecutionListenerSupport
         reader.setResource(new FileSystemResource(inputFile));
         reader.setLineMapper(new DefaultLineMapper() {{
             setLineTokenizer(new DelimitedLineTokenizer(inputDelimiter) {{
+                setNames(inputFieldNames.split(inputDelimiter));
+            }});
+            setFieldSetMapper(new PassThroughFieldSetMapper());
+        }});
+        return reader;
+    }
+
+    @Bean
+    public FlatFileItemReader regexReader() {
+        FlatFileItemReader reader = new FlatFileItemReader();
+        reader.setResource(new FileSystemResource(inputFile));
+        reader.setLineMapper(new DefaultLineMapper() {{
+            setLineTokenizer(new RegexLineTokenizer() {{
+            	setRegex(inputRegEx);
                 setNames(inputFieldNames.split(inputDelimiter));
             }});
             setFieldSetMapper(new PassThroughFieldSetMapper());
@@ -192,22 +207,20 @@ public class BatchApp extends JobExecutionListenerSupport
     }
 
 	public class XMLMapConverter implements Converter {
-	   
-	    public void marshal(Object source, HierarchicalStreamWriter writer, 
+	   	public void marshal(Object source, HierarchicalStreamWriter writer, 
 	    	MarshallingContext context) {
 	        Map<?, ?> map = ((FieldSet)source).getProperties();
-	        if(map == null) return;
-	        map.forEach((k, v) -> {
-	            writer.startNode(k.toString());
-	            writer.setValue(v.toString());
-	            writer.endNode(); 
-	        });
+	        if(map != null) {
+		        map.forEach((k, v) -> {
+		            writer.startNode(k.toString());
+		            writer.setValue(v.toString());
+		            writer.endNode(); 
+		        });
+		    }
 	    }
 
 	    public boolean canConvert(Class type) { return true; }
 	    public Object unmarshal(HierarchicalStreamReader reader, 
-	    	UnmarshallingContext context) {
-	        return null;
-	    }
+	    	UnmarshallingContext context) { return null; }
 	}    
 }
